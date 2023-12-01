@@ -1,0 +1,340 @@
+---
+title: "Analisando o Impacto dos Gastos em Segurança e Posse de Armas na Violência nos estados brasileiros"
+subtitle: "A Importância dos Efeitos Fixos"
+author: "Maria Luísa Guimarães"
+date: '`r Sys.Date()`'
+output:
+  html_document:
+    
+    theme: paper
+    code_folding: hide
+    number_sections: false
+    toc: true
+    toc_float: true
+    toc_depth: 3
+  pdf_document: default
+---
+
+![](https://img2.migalhas.com.br/_MEDPROC_/https__img.migalhas.com.br__SL__gf_base__SL__empresas__SL__MIGA__SL__imagens__SL__2023__SL__02__SL__06__SL__381a0ba5-9f33-4118-b2c6-e9ed597455a6.jpeg._PROC_CP65.jpeg){width="712"}
+
+# Introdução ao Problema
+
+O problema consiste em investigar a relação entre gastos em segurança, posse de armas por 100.000 habitantes e indicadores de violência (em Ln) por 100.000 habitantes em diferentes estados brasileiros. O objetivo é entender como o controle dos efeitos fixos dos estados pode alterar as estimativas, sugerindo a presença de viés de variáveis omitidas em modelos que não controlam esses efeitos. Para isso, as seguintes variáveis foram retiradas do Anuário de Segurança Pública e IPEAdata, referentes ao período de 2017 - 2021:
+
+1.  uf
+
+2.  ano
+
+3.  população
+
+4.  registros_posse: registros de posse ativos, em números absolutos
+
+5.  posse_ilegal: armas apreendidas em condição ilegal, em números absolutos
+
+6.  despesas_sp: despesas com funções diversas da segurança pública
+
+7.  mvi_100k: mortes violentas intecionais, em 100k
+
+8.  feminicidios_100k: registros de feminicídios, em 100k
+
+9.  roubo_total: registros de roubos, em números absolutos
+
+10. latrocinio_vitimas_100k: vítimas de latrocínio, em 100k
+
+11. anos_estudo: média dos anos de estudo
+
+12. tx_analfabetismo: taxa de analfabetismo
+
+13. n_bolsa_familia: recepientes do programa Bolsa Família, em números absolutos
+
+14. idh: Índice de Desenvolvimento Humano
+
+Todas as variáveis mencionadas foram posteriormente transformadas em log e colocadas a uma taxa por 100k de habitantes.
+
+# Análise Exploratória
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = FALSE,
+	message = FALSE,
+	warning = FALSE
+)
+```
+
+```{r , message=FALSE, warning=FALSE}
+library(stargazer)
+library(haven)
+library(skimr)
+library(geobr)
+library(readxl)
+library(tidyverse)
+library(MetBrewer)
+library(plm)
+library(plotly)
+library(ggpubr)
+library(stats) # Regressions
+library(lmtest)
+library(knitr) # better output tables - allows exporting table to html and pdf.tex formats
+library(expss)
+```
+
+```{r, message=FALSE, fig.align = "center"}
+data <- read_xlsx("C:/Users/guima/Documents/R/Laboratório de Econometria/dados.xlsx") 
+
+data <- data %>%
+  filter(ano %in% c(2017:2021)) %>%
+  select(!penitenciario_100k)
+
+mytheme <- 
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"),
+        plot.subtitle = element_text(hjust = 0.5),
+        legend.position = "top")
+
+plain <- theme(
+  axis.text = element_blank(),
+  axis.line = element_blank(),
+  axis.ticks = element_blank(),
+  panel.border = element_blank(),
+  panel.grid = element_blank(),
+  axis.title = element_blank(),
+  panel.background = element_rect(fill = "white"),
+  plot.title = element_text(hjust = 0.5, face = "bold"),
+  plot.subtitle = element_text(hjust = 0.5),
+  legend.position = "top") 
+
+options(scipen = 999)
+
+
+data <- replace(data, is.na(data), 1)
+
+data <- data %>%
+  mutate(a17 = ifelse(ano == 2017, 1, 0),
+         a18 = ifelse(ano == 2018, 1, 0),
+         a19 = ifelse(ano == 2019, 1, 0),
+         a20 = ifelse(ano == 2020, 1, 0),
+         a21 = ifelse(ano == 2021, 1, 0),
+         gasto_100k = log((100000)*despesas_sp/populaçao),
+         posse_100k = log((100000)*registros_posse/populaçao),
+         ilegal_100k = log((100000)*posse_ilegal/populaçao),
+         armas_total = log((100000)*(registros_posse + posse_ilegal)/populaçao),
+         lnfem_100k = log((feminicidios_100k)),
+         lnlat_100k = log((latrocinio_vitimas_100k)),
+         lnmvi_100k = log((mvi_100k)),
+         lnroubo_100k = log((roubo_total)),
+         ln_total = log(feminicidios_100k + latrocinio_vitimas_100k + mvi_100k + roubo_total),
+         bsf_100k = log((100000)*n_bolsa_familia/populaçao),
+         aramas_total = log(((100000)*posse_ilegal/populaçao) + ((100000)*(registros_posse + posse_ilegal)/populaçao)),
+         quarentena = ifelse(ano > 2019, 1, 0))
+
+data <- data %>%
+  mutate(regiao = case_when(
+    uf %in% c("Acre", "Amapá", "Amazonas", "Pará", "Rondônia", "Roraima", "Tocantins") ~ "Norte",
+    uf %in% c("Alagoas", "Bahia", "Ceará", "Maranhão", "Paraíba", "Pernambuco", "Piauí", "Rio Grande do Norte", "Sergipe") ~ "Nordeste",
+    uf %in% c("Distrito Federal", "Goiás", "Mato Grosso", "Mato Grosso do Sul") ~ "Centro-Oeste",
+    uf %in% c("Espírito Santo", "Minas Gerais", "Rio de Janeiro", "São Paulo") ~ "Sudeste",
+    uf == "Paraná" ~ "Sul",
+    uf == "Santa Catarina" ~ "Sul",
+    uf == "Rio Grande do Sul" ~ "Sul",
+    TRUE ~ NA_character_ 
+  ))
+
+```
+
+É possível observar que o número de registros de posse ativos teve tendência crescente no período observado, com exceção da região Centro-Oeste. As ocorrências de posse ilegal, por sua vez, tiveram evolução mais discrepante entre as regiões.
+
+```{r fig.height=10, fig.width=14, warning=FALSE, , message=FALSE, fig.align='center'}
+# Evolução do número de armas
+## Legais
+legal <- data %>%
+  group_by(ano, regiao) %>%
+  summarise(posse = mean(posse_100k)) %>%
+  ggplot(aes(x = ano, y = posse, color = regiao)) +
+  geom_line(size = 1.5) +
+  scale_color_manual(values = met.brewer('VanGogh2')) +
+  labs(x = '',
+       y = 'Posse de arma (por 100k de habitantes)',
+       title = 'Evolução dos registros de posse ativos',
+       subtitle = 'Observações por região',
+       color = '') +
+  mytheme
+
+## Ilegais
+ilegal <- data %>%
+  drop_na(ilegal_100k) %>%
+  group_by(ano, regiao) %>%
+  summarise(ile = mean(ilegal_100k)) %>%
+  ggplot(aes(x = ano, y = ile, color = regiao)) +
+  geom_line(size = 1.5) +
+  scale_color_manual(values = met.brewer('VanGogh2')) +
+  labs(x = '',
+       y = 'Posse de arma ilegal (por 100k de habitantes)',
+       title = 'Evolução dos registros de posse ilegal',
+       subtitle = 'Observações por região',
+       color = '') +
+  mytheme
+
+ggarrange(legal, ilegal,
+          ncol = 1,
+          nrow = 2)
+```
+Os gastos tiveram queda a partir de 2020. 
+```{r, fig.height=10, fig.width=14, message=FALSE, fig.align = "center"}
+# Evolução dos gastos
+data %>%
+  group_by(ano, regiao) %>%
+  summarise(gasto = mean(gasto_100k)) %>%
+  ggplot(aes(x = ano, y = gasto, color = regiao)) +
+  geom_line(size = 1.5) +
+  scale_color_manual(values = met.brewer('VanGogh2')) +
+  scale_y_continuous(labels = scales::dollar_format(scale = 1)) +
+  labs(x = '',
+       y = 'Gastos com segurança pública (por 100k de habitantes)',
+       title = 'Evolução dos gastos com segurança pública',
+       subtitle = 'Observações por região',
+       color = '') +
+  mytheme
+```
+No geral, gastos com segurança pública aparentam ter uma leve relação negativa com o número de crimes cometidos.
+```{r, fig.height=10, fig.width=14, message=FALSE, fig.align = "center"}
+lat <- data %>%
+  ggplot(aes(x = latrocinio_vitimas_100k, y = gasto_100k, color = regiao, shape = as.factor(ano))) +
+  geom_point() +
+  scale_color_manual(values = met.brewer('VanGogh2')) +
+  scale_y_continuous(labels = scales::dollar_format(scale = 1)) +
+  labs(x = 'Vítimas de latrocínio',
+       y = 'Gastos com segurança pública',
+       title = 'Gastos com segurança pública e latrocínios',
+       subtitle = 'Observações por região',
+       color = '',
+       shape = '') +
+  mytheme
+
+fem <- data %>%
+  ggplot(aes(x = feminicidios_100k, y = gasto_100k, color = regiao, shape = as.factor(ano))) +
+  geom_point() +
+  scale_color_manual(values = met.brewer('VanGogh2')) +
+  scale_y_continuous(labels = scales::dollar_format(scale = 1)) +
+  labs(x = 'Vítimas de feminicídio',
+       y = 'Gastos com segurança pública',
+       title = 'Gastos com segurança pública e feminicídios',
+       subtitle = 'Observações por região',
+       color = '',
+       shape = '') +
+  mytheme
+
+mvi <- data %>%
+  ggplot(aes(x = mvi_100k, y = gasto_100k, color = regiao, shape = as.factor(ano))) +
+  geom_point() +
+  scale_color_manual(values = met.brewer('VanGogh2')) +
+  scale_y_continuous(labels = scales::dollar_format(scale = 1)) +
+  labs(x = 'MVIs',
+       y = 'Gastos com segurança pública',
+       title = 'Gastos com segurança pública e MVIs',
+       subtitle = 'Observações por região',
+       color = '', 
+       shape = '') +
+  mytheme
+
+roubo <- data %>%
+  ggplot(aes(x = lnroubo_100k, y = gasto_100k, color = regiao, shape = as.factor(ano))) +
+  geom_point() +
+  scale_color_manual(values = met.brewer('VanGogh2')) +
+  scale_y_continuous(labels = scales::dollar_format(scale = 1)) +
+  labs(x = 'Roubos',
+       y = 'Gastos com segurança pública',
+       title = 'Gastos com segurança pública e roubos',
+       subtitle = 'Observações por região',
+       color = '',
+       shape = '') +
+  mytheme
+
+ggarrange(lat, fem, roubo, mvi,
+          ncol = 2,
+          nrow = 2,
+          legend.grob = get_legend(mvi))
+```
+Também é perceptível que algumas regiões tem maior ocorrência de crimes.
+```{r, message=FALSE, fig.align = "center"}
+ggplotly(data %>%
+  filter(!gasto_100k > 150000000) %>%
+  ggplot(aes(x = lnroubo_100k, y = gasto_100k, color = regiao, shape = as.factor(ano), label = uf)) +
+  geom_point() +
+  scale_color_manual(values = met.brewer('VanGogh2')) +
+  scale_y_continuous(labels = scales::dollar_format(scale = 1)) +
+  labs(x = 'Roubos',
+       y = 'Gastos com segurança pública',
+       title = 'Gastos com segurança pública e roubos',
+       subtitle = 'Observações por região',
+       color = '',
+       shape = '') +
+  mytheme)
+```
+
+```{r fig.height=10, fig.width=14, fig.align="center", message=FALSE, warning=FALSE, results='hide'}
+#estados com maior média de crimes
+brasil <- read_country(year = 2020)
+
+diff <- setdiff(data$uf, brasil$name_state)
+
+#Renomeando 
+brasil$name_state[brasil$name_state == "Amazônas"] = "Amazonas"
+brasil$name_state[brasil$name_state == "Rio Grande Do Norte"] = "Rio Grande do Norte"
+brasil$name_state[brasil$name_state == "Rio De Janeiro"] = "Rio de Janeiro"
+brasil$name_state[brasil$name_state == "Rio Grande Do Sul"] = "Rio Grande do Sul"
+brasil$name_state[brasil$name_state == "Mato Grosso Do Sul"] = "Mato Grosso do Sul"
+
+brasil <- brasil %>% 
+  left_join(data %>% 
+              group_by(uf, ano) %>% 
+              summarise(mean_ind = ln_total,
+                        renda = renda_per_capita), by = c("name_state"="uf"))
+```
+Observando a crimiminalidade como um todo, observa-se uma queda dos índices, ainda que estados como São Paulo e Rio de Janeiro continuem se destacando.
+```{r, message=FALSE, fig.align = "center"}
+ggplot() +
+  geom_sf(data = brasil, aes(fill=mean_ind), color= "black")+
+  scale_fill_gradient(low = "lightyellow" , high = "red",
+                      name="") +
+  facet_wrap(~ano) +
+  ggtitle("Mapa do Brasil", "Média de crimminalidade por ano") +
+  plain
+```
+
+# Regressões 
+As regressões foram feitas em POLS, RE, FE, FD.
+```{r, message=FALSE, fig.align = "center"}
+## POLS estimates - You could include time invariant variables
+reg.POLS4th <- plm(ln_total ~ gasto_100k + posse_100k + ilegal_100k + renda_per_capita + tx_desemprego + tx_anafalbetismo + bsf_100k + quarentena   + a17 + a18 + a19 + a20 + a21, data = data, index=c("uf", "ano"), model="pooling", na.action = na.exclude)
+
+# Random Effect Estimates
+reg.RE4th <- plm(ln_total ~ gasto_100k + posse_100k + ilegal_100k + renda_per_capita + tx_desemprego + tx_anafalbetismo + bsf_100k+ quarentena  + a17 + a18 + a19 + a20 + a21 , data = data, index=c("uf", "ano"), model="random", random.method="walhus",na.action = na.exclude)
+
+
+# Fixed Effect Estimates
+reg.FE4th <- plm(ln_total ~ gasto_100k + posse_100k + ilegal_100k + renda_per_capita + tx_desemprego + tx_anafalbetismo + bsf_100k + quarentena  + a17 + a18 + a19 + a20 + a21 , data = data, index=c("uf", "ano"), model="within",na.action = na.exclude)
+
+
+# First Differences (equal to FE within estimator when T=2)
+reg.FD4th <- plm(ln_total ~ gasto_100k + posse_100k + ilegal_100k +  renda_per_capita + tx_desemprego + tx_anafalbetismo + bsf_100k + quarentena   + a17 + a18 + a19 + a20 + a21, data = data, index=c("uf", "ano"), model="fd",na.action = na.exclude)
+
+stargazer(reg.POLS4th, reg.RE4th, reg.FE4th, reg.FD4th, title="Regression Results", align=TRUE, type="text", column.labels=c("POLS", "RE","FE", "FD"), column.separate=c(1,1,1,1))
+
+
+
+#Robust Standard Errors.
+#Residuals are autocorrelated within panels. THus, the robust standard errors are calculated bellow
+reg.POLS4th$robse<-vcovHC(reg.POLS4th, method="arellano", type = "HC3", cluster=c("group"))
+reg.RE4th$robse<-vcovHC(reg.RE4th, method="arellano", type = "HC3", cluster=c("group"))
+reg.FE4th$robse<-vcovHC(reg.FE4th, method="arellano", type = "HC3", cluster=c("group"))
+reg.FD4th$robse<-vcovHC(reg.FD4th, method="arellano", type = "HC3", cluster=c("group"))
+
+```
+Apesar do resultado do Hausman Test, a escolha mais coerente é o medidor em Efeitos Fixos.
+```{r, message=FALSE, fig.align = "center"}
+phtest(reg.RE4th, reg.FE4th)
+```
+
+# Comparação e Conclusão
+Os resultados encontrados indicam a dificuldade de atribuir fatores específicos que impactem o crescimento da criminalidade. Analisando os parâmetros em FE, a única relação com significância estatística (10%) se dá com a posse ilegal de armas. Um problema da base de dados que contribui para a dificuldade é o período analisado - entre 2017 e 2021 houveram maiores taxas de crescimento de posse de arma, ao mesmo tempo em que nos últimos anos o período de quarentena restringiu a ocorrência de determinados crimes.
+
